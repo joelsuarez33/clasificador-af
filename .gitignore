@@ -1,0 +1,22 @@
+# Variables de entorno (contienen rutas y configuración local)
+.env
+
+# Credenciales de Service Account: preferentemente fuera del repo.
+# Si viven dentro, deben estar en secrets/ (se ignora todo salvo el .gitkeep).
+secrets/*
+!secrets/.gitkeep
+*service-account*.json
+*-sa.json
+
+# Entorno virtual y artefactos de Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Datos de la empresa: no se publican. Cada PC copia los Excel a data/ (ver README).
+data/*.xlsx
+data/catalogo.json
