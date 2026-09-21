@@ -2,7 +2,7 @@ import pytest
 
 from app.classifier import Clasificador
 from app.models import ClasificacionInput, ClasificacionRespuesta
-from app.servicio import ClasificadorAF, formatear_linea
+from app.classifier_core import ClasificadorAF, formatear_linea
 from tests.conftest import respuesta_json
 
 
@@ -53,6 +53,7 @@ def test_acepta_clasificacion_input(servicio):
 def test_formatear_linea_colapsa_saltos_de_linea():
     respuesta = ClasificacionRespuesta(
         clase_sugerida=53000010,
+        denominacion_sugerida="Notebook",
         confianza="alta",
         justificacion="x",
         alternativas=[],

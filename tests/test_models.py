@@ -32,12 +32,26 @@ def test_output_valido():
     out = ClasificacionOutput.model_validate(
         {
             "clase_sugerida": 53000010,
+            "denominacion_sugerida": "Notebook Lenovo ThinkPad T14",
             "confianza": "media",
             "justificacion": "ok",
             "alternativas": [{"clase": 53000020, "motivo": "similar"}],
         }
     )
     assert out.alternativas[0].clase == 53000020
+
+
+def test_output_rechaza_denominacion_mayor_a_50():
+    with pytest.raises(ValidationError):
+        ClasificacionOutput.model_validate(
+            {
+                "clase_sugerida": 53000010,
+                "denominacion_sugerida": "x" * 51,  # TXT50 de SAP admite 50 caracteres
+                "confianza": "alta",
+                "justificacion": "ok",
+                "alternativas": [],
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -49,12 +63,24 @@ def test_output_valido():
     ],
 )
 def test_output_rechaza_esquema_invalido(cambio):
-    base = {"clase_sugerida": 53000010, "confianza": "alta", "justificacion": "ok", "alternativas": []}
+    base = {
+        "clase_sugerida": 53000010,
+        "denominacion_sugerida": "Notebook",
+        "confianza": "alta",
+        "justificacion": "ok",
+        "alternativas": [],
+    }
     with pytest.raises(ValidationError):
         ClasificacionOutput.model_validate({**base, **cambio})
 
 
 def test_output_campos_requeridos_en_schema():
     schema = ClasificacionOutput.model_json_schema()
-    assert set(schema["required"]) == {"clase_sugerida", "confianza", "justificacion", "alternativas"}
+    assert set(schema["required"]) == {
+        "clase_sugerida",
+        "denominacion_sugerida",
+        "confianza",
+        "justificacion",
+        "alternativas",
+    }
     assert schema["properties"]["confianza"]["enum"] == ["alta", "media", "baja"]

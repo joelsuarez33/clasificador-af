@@ -12,8 +12,6 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "google-genai==1.21.1",
     "google-cloud-bigquery==3.34.0",
-    "fastapi==0.115.12",
-    "uvicorn==0.34.3",
     "pydantic==2.11.7",
     "tenacity==8.5.0",  # google-genai 1.21.x exige tenacity<9
     "openpyxl==3.1.5",
@@ -23,14 +21,12 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest==8.4.1",
-    "httpx==0.28.1",
 ]
 
 [project.scripts]
-af-clasificar = "app.servicio:main"
+af-clasificar = "app.classifier_core:main"
 af-cargar-catalogo = "preprocess.load_catalogo:main"
 af-construir-indice = "preprocess.build_index:main"
-af-api = "app.main:run"
 
 [tool.setuptools.packages.find]
 include = ["app*", "preprocess*"]

@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.servicio import clasificar_detallado, formatear_linea  # noqa: E402
+from app.classifier_core import clasificar_detallado, formatear_linea  # noqa: E402
 
 
 def mostrar(denominacion: str) -> None:

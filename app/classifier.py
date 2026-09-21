@@ -79,7 +79,9 @@ class Clasificador:
         except RespuestaInvalidaError as exc:
             logger.warning("Clasificación sin validar tras %d intentos: %s", intentos, exc)
             return ResultadoClasificacion(
-                output=self._fallback(precedentes, str(exc), intentos), fallback=True, intentos=intentos
+                output=self._fallback(entrada.denominacion, precedentes, str(exc), intentos),
+                fallback=True,
+                intentos=intentos,
             )
         raise AssertionError("inalcanzable")  # pragma: no cover
 
@@ -133,8 +135,13 @@ class Clasificador:
             depuradas.append(alt)
         return depuradas[:MAX_ALTERNATIVAS]
 
-    def _fallback(self, precedentes: list[Precedente], error: str, intentos: int) -> ClasificacionOutput:
-        """Sin respuesta válida del modelo: voto ponderado de precedentes, siempre con códigos del catálogo."""
+    def _fallback(
+        self, denominacion_fallback: str, precedentes: list[Precedente], error: str, intentos: int
+    ) -> ClasificacionOutput:
+        """Sin respuesta válida del modelo: voto ponderado de precedentes, siempre con códigos del catálogo.
+
+        La denominación sugerida cae a la del activo de entrada, porque no hay respuesta del modelo.
+        """
         votos = votos_por_clase(precedentes, self.catalogo)
         if not votos:
             raise ClasificacionFallidaError(
@@ -145,6 +152,7 @@ class Clasificador:
         descripcion = self.catalogo.get(ganador.clase).descripcion
         return ClasificacionOutput(
             clase_sugerida=ganador.clase,
+            denominacion_sugerida=denominacion_fallback[:50],
             confianza="baja",
             justificacion=(
                 f"Clasificación automática NO validada: el modelo falló {intentos} veces (último error: {error}). "

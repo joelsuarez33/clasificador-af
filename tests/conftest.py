@@ -57,10 +57,16 @@ def fake_genai():
     return FakeGenaiClient
 
 
-def respuesta_json(clase: int, confianza: str = "alta", alternativas: list[dict] | None = None) -> str:
+def respuesta_json(
+    clase: int,
+    confianza: str = "alta",
+    alternativas: list[dict] | None = None,
+    denominacion: str = "Notebook Lenovo ThinkPad",
+) -> str:
     return json.dumps(
         {
             "clase_sugerida": clase,
+            "denominacion_sugerida": denominacion,
             "confianza": confianza,
             "justificacion": "Precedentes muy similares.",
             "alternativas": alternativas or [],

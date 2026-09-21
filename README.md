@@ -1,6 +1,6 @@
 # Clasificador de Activos Fijos (AF)
 
-Servicio HTTP que sugiere la **clase de activo fijo** del *Daimler Group Asset Class Catalogue* para una
+Librería Python que sugiere la **clase de activo fijo** del *Daimler Group Asset Class Catalogue* para una
 denominación de activo. Usa como evidencia los precedentes históricos ya clasificados.
 
 - **Retrieval:** BigQuery Vector Search sobre ~14.400 activos históricos embebidos con Vertex AI `text-embedding-005`.
@@ -8,9 +8,8 @@ denominación de activo. Usa como evidencia los precedentes históricos ya clasi
 - **Garantía:** la clase devuelta **siempre** es un código del catálogo oficial. Si el modelo propone un código
   inexistente, se le reinyecta el error hasta 2 veces. Si aun así falla, se devuelve la clase más votada entre los
   precedentes con `confianza: "baja"` y `fallback: true`.
-- **Se usa como librería:** `app.servicio.clasificar()` devuelve una sola línea (`"52000340 - Maquinas … CNC"`) para
+- **Se usa como librería:** `app.classifier_core.clasificar()` devuelve una sola línea (`"52000340 - Maquinas … CNC"`) para
   insertar en un campo de SAP. La versión con confianza, justificación y precedentes es `clasificar_detallado()`.
-  La API HTTP existe, pero es opcional.
 
 ```
 Politica_AF.xlsx ──► preprocess/load_catalogo.py ──► data/catalogo.json + BQ politica_af
@@ -32,13 +31,13 @@ clasificador-af/
 │   ├── retrieval.py       # buscar_precedentes() con VECTOR_SEARCH
 │   ├── prompt_builder.py  # prompt de sistema (reglas + catálogo) y de usuario (activo + precedentes)
 │   ├── classifier.py      # Gemini + validación de código + reintentos con tenacity + fallback
-│   ├── servicio.py        # ENTRADA PRINCIPAL: clasificar() -> una línea; clasificar_detallado() -> todo
-│   └── main.py            # API HTTP opcional sobre servicio.py
+│   └── classifier_core.py # ENTRADA PRINCIPAL: clasificar_af() / clasificar() / clasificar_detallado()
 ├── preprocess/
 │   ├── load_catalogo.py   # Politica_AF.xlsx -> catalogo.json + tabla politica_af
 │   └── build_index.py     # AF_definitivos_creados.xlsx -> embeddings + VECTOR INDEX (incremental)
 ├── data/                  # Excel fuente + catalogo.json generado
-├── scripts/               # demo.py (demo interactiva) / run_api.* / ejemplo_request.json
+├── sap/                   # automatización SAP GUI (ME53N -> AS01) + _debug_columnas.py
+├── scripts/               # demo.py (demo interactiva)
 ├── secrets/               # (opcional) JSON de Service Account; ignorado por git
 ├── tests/                 # pytest con dobles de Vertex AI y BigQuery (sin llamadas reales)
 ├── pyproject.toml         # dependencias con versión exacta, requires-python 3.12
@@ -49,7 +48,7 @@ clasificador-af/
 ## Requisitos
 
 - **Python 3.12.x, obligatorio.** `pyproject.toml` declara `requires-python = ">=3.12,<3.13"`, así que `pip install`
-  falla con cualquier otra versión, y `app/main.py` aborta al arrancar si no corre en 3.12.
+  falla con cualquier otra versión, y el entorno se crea con `setup.ps1` / `setup.sh`.
   - Windows: `winget install -e --id Python.Python.3.12`, o el instalador de python.org (marcá *Add python.exe to PATH*).
     Si tenés varias versiones instaladas, el launcher `py -3.12` elige la correcta; `setup.ps1` lo usa automáticamente.
   - macOS: `brew install python@3.12`
@@ -67,7 +66,7 @@ clasificador-af/
 | `roles/bigquery.jobUser` (BigQuery Job User) | Proyecto | Ejecutar consultas, cargas y `VECTOR_SEARCH` |
 | `roles/bigquery.dataEditor` (BigQuery Data Editor) | Dataset (o proyecto si el dataset aún no existe) | Crear el dataset y las tablas, cargar datos, crear el `VECTOR INDEX` |
 
-En producción, la API solo necesita `roles/bigquery.dataViewer` sobre el dataset. `dataEditor` hace falta únicamente
+En producción, el clasificador solo necesita `roles/bigquery.dataViewer` sobre el dataset. `dataEditor` hace falta únicamente
 para correr `preprocess/`.
 
 ## Setup paso a paso
@@ -80,7 +79,7 @@ para correr `preprocess/`.
    BQ_DATASET=activos_fijos
    GOOGLE_APPLICATION_CREDENTIALS=C:/credenciales/rag-af-sa.json   # ruta absoluta
    ```
-   Las opcionales (región, modelos, nombres de tabla, `API_KEY`, puerto) están documentadas en `.env.example`.
+   Las opcionales (región, modelos, nombres de tabla) están documentadas en `.env.example`.
 3. **Instalación.** Hace falta conexión a internet.
    - Windows: `powershell -ExecutionPolicy Bypass -File .\setup.ps1`
    - Linux/macOS: `chmod +x setup.sh && ./setup.sh`
@@ -103,15 +102,27 @@ para correr `preprocess/`.
    ```
 7. **Probar una clasificación:**
    ```
-   .venv\Scripts\python -m app.servicio "Torno CNC" --monto 50000
+   .venv\Scripts\python -m app.classifier_core "Torno CNC" --monto 50000
    ```
 
 ## Uso desde otro script (caso principal)
 
-La llamada estándar devuelve **una sola línea**, lista para escribir en un campo de SAP:
+Es una librería: se importa, no se expone por HTTP. La automatización de SAP (`sap/`) la llama así:
 
 ```python
-from app.servicio import clasificar
+from app.classifier_core import clasificar_af
+
+c = clasificar_af("Corrugadora Tansen linea completa", monto=120000, centro_costo="CC-4100")
+c.clase_sugerida          # 52000660
+c.denominacion_sugerida   # 'Línea completa de corrugado industrial'  (máx. 50 chars, para TXT50)
+c.confianza               # 'alta' | 'media' | 'baja'
+c.justificacion
+```
+
+También hay una variante que devuelve **una sola línea**, lista para escribir en un campo de texto:
+
+```python
+from app.classifier_core import clasificar
 
 linea = clasificar("Torno CNC", monto=50000)
 # '52000340 - Maquinas (del rubro maquinarias I) CNC'
@@ -134,7 +145,7 @@ La primera llamada crea los clientes y carga el catálogo; las siguientes reutil
 Misma clasificación, con la evidencia, para auditar o mostrar en pantalla:
 
 ```python
-from app.servicio import clasificar_detallado
+from app.classifier_core import clasificar_detallado
 
 r = clasificar_detallado("Torno CNC", monto=50000)
 r.clase_sugerida   # 52000340
@@ -149,13 +160,27 @@ r.fallback         # True: la clase salió del voto de precedentes; revisar a ma
 ### Desde la consola
 
 ```
-.venv\Scripts\python -m app.servicio "Torno CNC" --monto 50000     # imprime la línea
-.venv\Scripts\python -m app.servicio "Torno CNC" --solo-codigo
-.venv\Scripts\python -m app.servicio "Torno CNC" --detalle          # JSON completo
+.venv\Scripts\python -m app.classifier_core "Torno CNC" --monto 50000     # imprime la línea
+.venv\Scripts\python -m app.classifier_core "Torno CNC" --solo-codigo
+.venv\Scripts\python -m app.classifier_core "Torno CNC" --detalle          # JSON completo
 .venv\Scripts\python scripts\demo.py                                # demo interactiva
 ```
 
 Códigos de salida: `0` OK, `2` error de configuración o sin clase válida (el detalle va a stderr).
+
+## Automatización SAP (`sap/`)
+
+- `sap_me53n_as01t.py`: lee la solicitud de pedido en ME53N, captura la pantalla al portapapeles, muestra un
+  formulario de revisión humana y completa AS01. Con `MODO_SIMULACION = True` completa la pantalla y **no graba**.
+- `_debug_columnas.py`: utilitario de diagnóstico. Imprime el `ColumnOrder` del grid de posiciones de ME53N, que es
+  lo que hace falta para leer varias posiciones. Requiere SAP GUI abierto y `pip install pywin32 pillow`.
+
+  ```
+  .venv\Scripts\python sap\_debug_columnas.py 10012345 --valores 3
+  ```
+
+La clase de activo `ANLKL` sale de `DEFAULTS_AS01` y es constante por decisión de negocio: **no** la define el
+clasificador.
 
 ### Errores a contemplar en el script que la llama
 
@@ -165,27 +190,6 @@ Códigos de salida: `0` OK, `2` error de configuración o sin clase válida (el 
 | `app.classifier.ClasificacionFallidaError` | Ni el modelo ni los precedentes dieron una clase del catálogo: requiere clasificación manual |
 | `google.genai.errors.APIError`, `google.api_core.exceptions.GoogleAPIError` | Falla de Vertex AI o BigQuery tras los reintentos automáticos |
 
-## API HTTP (opcional)
-
-Solo si además querés exponerlo por HTTP (por ejemplo, para n8n o para probar desde el navegador).
-No hace falta para el uso desde otro script, y `app/main.py` se puede borrar sin tocar la lógica.
-
-```
-.venv\Scripts\python -m app.main      # o scripts\run_api.ps1 / scripts/run_api.sh
-```
-
-- `POST /clasificar` → `text/plain` con la misma línea: `52000340 - Maquinas (del rubro maquinarias I) CNC`
-- `POST /clasificar/detalle` → JSON completo
-- Con `API_KEY` en `.env`, ambos exigen el header `X-API-Key`.
-- Documentación interactiva en `http://127.0.0.1:8000/docs` (en Windows usá `127.0.0.1`, no `localhost`).
-
-| HTTP | Significado |
-|---|---|
-| 200 | Clasificación con código validado |
-| 401 | Falta `X-API-Key` o no coincide |
-| 422 | Input inválido (p. ej. falta `denominacion`) |
-| 502 | Ni el modelo ni los precedentes dieron una clase válida |
-| 503 | Error de Vertex AI o BigQuery: reintentar |
 
 ## Tests
 

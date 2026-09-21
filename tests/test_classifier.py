@@ -57,6 +57,8 @@ def test_agota_reintentos_y_usa_fallback_validado(catalogo, precedentes, fake_ge
     assert catalogo.contiene(resultado.output.clase_sugerida)
     assert all(catalogo.contiene(a.clase) for a in resultado.output.alternativas)
     assert "NO validada" in resultado.output.justificacion
+    # sin respuesta del modelo, la denominación cae a la del activo de entrada
+    assert resultado.output.denominacion_sugerida == ENTRADA.denominacion[:50]
 
 
 def test_fallback_sin_precedentes_validos_falla_explicito(catalogo, fake_genai):

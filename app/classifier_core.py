@@ -1,21 +1,27 @@
-"""Punto de entrada para otros scripts (p. ej. la automatización de SAP).
+"""Núcleo de clasificación: funciones puras, sin servidor ni HTTP.
 
-Uso estándar — devuelve UNA sola línea, lista para insertar en un campo de SAP:
+Uso desde otro script (p. ej. sap/sap_me53n_as01t.py):
 
-    from app.servicio import clasificar
+    from app.classifier_core import clasificar_af
+    c = clasificar_af("Torno CNC", monto=50000)
+    c.clase_sugerida, c.denominacion_sugerida, c.confianza, c.justificacion
+
+Una sola línea, lista para insertar en un campo de SAP:
+
+    from app.classifier_core import clasificar
     linea = clasificar("Torno CNC", monto=50000)
     # '52000340 - Maquinas (del rubro maquinarias I) CNC'
 
-Uso opcional — misma clasificación, con confianza, justificación, alternativas y precedentes:
+Con la evidencia completa (precedentes, alternativas):
 
-    from app.servicio import clasificar_detallado
+    from app.classifier_core import clasificar_detallado
     r = clasificar_detallado("Torno CNC", monto=50000)
     r.confianza, r.justificacion, r.precedentes
 
 También desde la consola:
 
-    python -m app.servicio "Torno CNC" --monto 50000
-    python -m app.servicio "Torno CNC" --detalle
+    python -m app.classifier_core "Torno CNC" --monto 50000
+    python -m app.classifier_core "Torno CNC" --detalle
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ from app.catalogo import Catalogo, cargar_catalogo
 from app.classifier import ClasificacionFallidaError, Clasificador
 from app.config import ConfigError, get_settings
 from app.gcp import crear_clientes
-from app.models import ClasificacionInput, ClasificacionRespuesta, Precedente
+from app.models import ClasificacionInput, ClasificacionOutput, ClasificacionRespuesta, Precedente
 from app.retrieval import buscar_precedentes
 
 logger = logging.getLogger(__name__)
@@ -127,6 +133,20 @@ def get_clasificador() -> ClasificadorAF:
         catalogo=catalogo,
         top_k=settings.top_k,
     )
+
+
+def clasificar_af(
+    denominacion: str,
+    monto: float | None = None,
+    centro_costo: str | None = None,
+) -> ClasificacionOutput:
+    """Clasificación pura de un activo: clase, denominación sugerida, confianza y justificación.
+
+    Es la función que consume la automatización de SAP. No abre servidores ni escucha puertos:
+    llama a BigQuery (precedentes) y a Vertex AI (Gemini) y devuelve el resultado validado
+    contra el catálogo.
+    """
+    return clasificar_detallado(denominacion, monto=monto, centro_costo=centro_costo)
 
 
 def clasificar(denominacion: str | ClasificacionInput, **kwargs: Any) -> str:

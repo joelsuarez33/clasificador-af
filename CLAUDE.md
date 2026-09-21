@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Python **3.12 only** (`requires-python = ">=3.12,<3.13"`; `app/main.py` asserts it). On this Windows machine the default `python` is 3.14, so use the venv or `py -3.12`.
+Python **3.12 only** (`requires-python = ">=3.12,<3.13"`). On this Windows machine the default `python` is 3.14, so use the venv or `py -3.12`.
 
 ```
 powershell -ExecutionPolicy Bypass -File .\setup.ps1   # create .venv, pip install -e ".[dev]", run tests and config check
@@ -13,9 +13,9 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1   # create .venv, pip insta
 .venv\Scripts\python -m app.config                      # validate .env and the Service Account without printing secrets
 .venv\Scripts\python -m preprocess.load_catalogo [--sin-bq]
 .venv\Scripts\python -m preprocess.build_index [--prune | --full-refresh | --dry-run]
-.venv\Scripts\python -m app.servicio "Torno CNC" [--detalle | --solo-codigo]   # one classification
-.venv\Scripts\python scripts\demo.py                    # interactive demo, no server
-.venv\Scripts\python -m app.main                        # OPTIONAL HTTP API on API_HOST:API_PORT
+.venv\Scripts\python -m app.classifier_core "Torno CNC" [--detalle | --solo-codigo]   # one classification
+.venv\Scripts\python scripts\demo.py                    # interactive demo
+.venv\Scripts\python sap\_debug_columnas.py 10012345    # prints the ME53N item grid ColumnOrder (needs SAP GUI)
 ```
 
 ## Architecture
@@ -25,14 +25,16 @@ The pipeline is linear on purpose (no agent frameworks):
 - **Offline (`preprocess/`)**
   - `load_catalogo` turns `data/Politica_AF.xlsx` (sheet "Test Version") into `data/catalogo.json`, which the app reads at startup, and into the BigQuery table `politica_af`.
   - `build_index` turns `data/AF_definitivos_creados.xlsx` into `af_historico_embeddings` and builds its `VECTOR INDEX`.
-- **Online (`app/`), in `servicio.ClasificadorAF`:** `retrieval.buscar_precedentes` → `prompt_builder` → `classifier.Clasificador`.
-  - **`app/servicio.py` is the entry point.** The caller is a SAP automation script, not HTTP. `clasificar()` returns one line (`"52000340 - Maquinas … CNC"`, via `formatear_linea`); `clasificar_detallado()` returns the full `ClasificacionRespuesta`. `get_clasificador()` is `lru_cache`d, so clients and catalog load once per process.
-  - `app/main.py` is a thin optional HTTP layer over it: `POST /clasificar` returns the same line as `text/plain`, `POST /clasificar/detalle` returns the JSON. Keep any new logic out of it.
+- **Online (`app/`), in `classifier_core.ClasificadorAF`:** `retrieval.buscar_precedentes` → `prompt_builder` → `classifier.Clasificador`.
+  - **`app/classifier_core.py` is the entry point, as a library.** There is no HTTP layer: `app/main.py` (FastAPI) was deleted on purpose, along with fastapi/uvicorn/httpx. Don't reintroduce them.
+  - `clasificar_af(denominacion, monto, centro_costo) -> ClasificacionOutput` is what `sap/` calls. `clasificar()` returns one line (`"52000340 - Maquinas … CNC"`, via `formatear_linea`) and `clasificar_detallado()` the full `ClasificacionRespuesta`. `get_clasificador()` is `lru_cache`d, so clients and catalog load once per process.
+- **SAP (`sap/sap_me53n_as01t.py`):** working script, tested against real SAP GUI (ME53N → screenshot → review form → AS01, with `MODO_SIMULACION`). Extend it; don't restructure or restyle it. `ANLKL` comes from `DEFAULTS_AS01` by business decision and must stay independent of the classifier.
 - **Invariant:** a response never contains a class code that isn't in the catalog.
   - `classifier` validates the code and retries up to 2 times, re-injecting the error into the conversation history (tenacity `Retrying`).
   - If that fails, it falls back to a similarity-weighted vote over precedents, excluding out-of-catalog classes, and returns `confianza="baja"` with `fallback=True`.
-  - If no precedent class is valid either, it raises `ClasificacionFallidaError` and the API answers HTTP 502.
+  - If no precedent class is valid either, it raises `ClasificacionFallidaError`.
   - Invalid alternatives are dropped silently.
+  - `denominacion_sugerida` (max 50 chars, for SAP's TXT50) is part of the Gemini response schema. On fallback it comes from the input text, since there is no model answer.
 - **Shared text cleaning:** `app/embeddings.py` holds the cleaning used by both indexing and querying. `normalizar_denominacion` keeps the text for display; `limpiar_denominacion` lowercases it for embedding. If you change it, run `build_index --full-refresh`.
 - **Auth:** `app/gcp.crear_clientes` builds both clients from the Service Account file with explicit credentials. There is never an ADC or gcloud user fallback.
 - **Config:** `app/config.load_settings` validates the env vars and the SA JSON. It also restricts project, dataset and table identifiers to a strict format because they are interpolated into SQL.
@@ -46,4 +48,4 @@ The pipeline is linear on purpose (no agent frameworks):
   - The real sheet has 179 classes and one duplicate code (53000040), of which the first occurrence is kept.
 - **History:** only about 3.5k of the ~14.4k rows are unique `(clase, denominacion_limpia)` pairs, and dedup is keyed on `row_id = sha256(clase|limpia)`. That puts the table under 5k rows, so BigQuery may not use the IVF index and falls back to exact search.
 - **Out-of-catalog classes:** 8 classes in the history aren't in the catalog. They are kept as precedents but marked `[FUERA DE CATÁLOGO]` in the prompt, and they are never eligible as an answer.
-- **Tests:** they use fakes from `tests/conftest.py` (`FakeGenaiClient`, `respuesta_json`). API tests override `get_servicio` and don't enter the lifespan.
+- **Tests:** they use fakes from `tests/conftest.py` (`FakeGenaiClient`, `respuesta_json`). Nothing in the suite touches GCP or SAP.
