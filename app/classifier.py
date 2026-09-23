@@ -18,7 +18,13 @@ from tenacity import (
 
 from app.catalogo import Catalogo
 from app.gcp import es_error_transitorio
-from app.models import AlternativaClase, ClasificacionInput, ClasificacionOutput, Precedente
+from app.models import (
+    AlternativaClase,
+    ClasificacionInput,
+    ClasificacionLLMOutput,
+    ClasificacionOutput,
+    Precedente,
+)
 from app.prompt_builder import build_correccion, build_system_prompt, build_user_prompt, votos_por_clase
 
 logger = logging.getLogger(__name__)
@@ -58,7 +64,7 @@ class Clasificador:
             system_instruction=build_system_prompt(catalogo),
             temperature=temperatura,
             response_mime_type="application/json",
-            response_schema=ClasificacionOutput,
+            response_schema=ClasificacionLLMOutput,
         )
 
     def clasificar(self, entrada: ClasificacionInput, precedentes: list[Precedente]) -> ResultadoClasificacion:
@@ -108,32 +114,24 @@ class Clasificador:
             return RespuestaInvalidaError(error)
 
         parsed = getattr(respuesta, "parsed", None)
-        if isinstance(parsed, ClasificacionOutput):
-            output = parsed
+        if isinstance(parsed, ClasificacionLLMOutput):
+            llm_output = parsed
         else:
             try:
-                output = ClasificacionOutput.model_validate_json(texto)
+                llm_output = ClasificacionLLMOutput.model_validate_json(texto)
             except ValidationError as exc:
                 errores = "; ".join(f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()[:5])
                 raise rechazar(f"la respuesta no respeta el esquema ({errores})") from exc
 
-        if not self.catalogo.contiene(output.clase_sugerida):
-            raise rechazar(f"clase_sugerida {output.clase_sugerida} no existe en el catálogo")
+        if not self.catalogo.contiene(llm_output.clase_sugerida):
+            raise rechazar(f"clase_sugerida {llm_output.clase_sugerida} no existe en el catálogo")
 
-        return output.model_copy(update={"alternativas": self._depurar_alternativas(output)})
-
-    def _depurar_alternativas(self, output: ClasificacionOutput) -> list[AlternativaClase]:
-        vistas = {output.clase_sugerida}
-        depuradas = []
-        for alt in output.alternativas:
-            if alt.clase in vistas:
-                continue
-            if not self.catalogo.contiene(alt.clase):
-                logger.info("Se descarta alternativa fuera de catálogo: %s", alt.clase)
-                continue
-            vistas.add(alt.clase)
-            depuradas.append(alt)
-        return depuradas[:MAX_ALTERNATIVAS]
+        return ClasificacionOutput(
+            **llm_output.model_dump(),
+            confianza="media",
+            justificacion="Clasificación generada por Gemini a partir del catálogo y los precedentes.",
+            alternativas=[],
+        )
 
     def _fallback(
         self, denominacion_fallback: str, precedentes: list[Precedente], error: str, intentos: int

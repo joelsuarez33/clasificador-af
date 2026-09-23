@@ -7,20 +7,28 @@ name = "clasificador-af"
 version = "0.1.0"
 description = "Clasificación de Activos Fijos contra el Daimler Group Asset Class Catalogue (Vertex AI Gemini + BigQuery Vector Search)"
 readme = "README.md"
-# pip rechaza la instalación en cualquier intérprete que no sea 3.12.x
-requires-python = ">=3.12,<3.13"
+# 3.12 es el piso, sin techo: el proyecto corre tambien en 3.13 y 3.14.
+requires-python = ">=3.12"
+# Pisos, no pines exactos: las versiones viejas de los paquetes compilados
+# (pydantic-core, grpcio) no publican wheels cp314 y rompen el install en 3.14.
 dependencies = [
-    "google-genai==1.21.1",
-    "google-cloud-bigquery==3.34.0",
-    "pydantic==2.11.7",
-    "tenacity==8.5.0",  # google-genai 1.21.x exige tenacity<9
-    "openpyxl==3.1.5",
-    "python-dotenv==1.1.0",
+    "google-genai>=1.21.1",
+    "google-cloud-bigquery>=3.34.0",
+    "pydantic>=2.12",   # 2.11.x exige pydantic-core 2.33.2, sin wheel para 3.14
+    "grpcio>=1.75.1",   # transitiva de bigquery; 1.75.1 es la primera con wheel cp314
+    "tenacity>=8.5.0",
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest==8.4.1",
+    "pytest>=8.4.1",
+]
+# Automatizacion SAP (sap/): solo Windows.
+sap = [
+    "pywin32>=311; sys_platform == 'win32'",   # 311 es la primera con wheel cp314
+    "pillow>=11.3.0; sys_platform == 'win32'",
 ]
 
 [project.scripts]

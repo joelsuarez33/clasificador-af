@@ -40,20 +40,23 @@ clasificador-af/
 ├── scripts/               # demo.py (demo interactiva)
 ├── secrets/               # (opcional) JSON de Service Account; ignorado por git
 ├── tests/                 # pytest con dobles de Vertex AI y BigQuery (sin llamadas reales)
-├── pyproject.toml         # dependencias con versión exacta, requires-python 3.12
+├── pyproject.toml         # dependencias con piso de versión, requires-python >= 3.12
 ├── setup.sh / setup.ps1   # setup reproducible Linux-macOS / Windows
 └── .env.example
 ```
 
 ## Requisitos
 
-- **Python 3.12.x, obligatorio.** `pyproject.toml` declara `requires-python = ">=3.12,<3.13"`, así que `pip install`
-  falla con cualquier otra versión, y el entorno se crea con `setup.ps1` / `setup.sh`.
-  - Windows: `winget install -e --id Python.Python.3.12`, o el instalador de python.org (marcá *Add python.exe to PATH*).
-    Si tenés varias versiones instaladas, el launcher `py -3.12` elige la correcta; `setup.ps1` lo usa automáticamente.
-  - macOS: `brew install python@3.12`
-  - Ubuntu/Debian: `sudo apt install python3.12 python3.12-venv` (en versiones viejas, PPA `deadsnakes`).
-  - pyenv: `pyenv install 3.12.7`. El repo trae `.python-version` y pyenv lo toma solo.
+- **Python >= 3.12** (probado en 3.12 y en 3.14). `pyproject.toml` declara `requires-python = ">=3.12"`, sin techo:
+  `pip install` falla solo con versiones anteriores. El entorno se crea con `setup.ps1` / `setup.sh`.
+  - Windows: `winget install -e --id Python.Python.3.12` (o una versión superior), o el instalador de python.org
+    (marcá *Add python.exe to PATH*). Si tenés varias versiones instaladas, el launcher `py -3` elige una;
+    `setup.ps1` lo usa automáticamente y verifica que sea >= 3.12.
+  - macOS: `brew install python@3.12` o superior.
+  - Ubuntu/Debian: `sudo apt install python3.12 python3.12-venv` o superior (en versiones viejas, PPA `deadsnakes`).
+  - pyenv: `pyenv install 3.14`. El repo trae `.python-version` y pyenv lo toma solo.
+  - En 3.14 los pisos de dependencias importan: `pydantic >= 2.12`, `grpcio >= 1.75.1` y `pywin32 >= 311` son las
+    primeras versiones con wheels para cp314.
 - Un proyecto de GCP con las APIs **Vertex AI** (`aiplatform.googleapis.com`) y **BigQuery** (`bigquery.googleapis.com`) habilitadas.
 - Un **JSON de Service Account** provisto por el administrador de GCP. El código no genera credenciales ni abre
   flujos de navegador: tampoco usa `gcloud auth login`.
@@ -84,7 +87,7 @@ para correr `preprocess/`.
    - Windows: `powershell -ExecutionPolicy Bypass -File .\setup.ps1`
    - Linux/macOS: `chmod +x setup.sh && ./setup.sh`
 
-   El script verifica Python 3.12, crea `.venv`, instala las dependencias pineadas (`pip install -e ".[dev]"`),
+   El script verifica Python >= 3.12, crea `.venv`, instala las dependencias (`pip install -e ".[dev]"`),
    comprueba los imports, corre los tests y valida la configuración con `python -m app.config`.
 4. **Fuentes de datos.** Deben estar en `data/` como `Politica_AF.xlsx` y `AF_definitivos_creados.xlsx`. Otras rutas se
    configuran con `POLITICA_AF_XLSX` y `AF_HISTORICO_XLSX`.
@@ -173,7 +176,8 @@ Códigos de salida: `0` OK, `2` error de configuración o sin clase válida (el 
 - `sap_me53n_as01t.py`: lee la solicitud de pedido en ME53N, captura la pantalla al portapapeles, muestra un
   formulario de revisión humana y completa AS01. Con `MODO_SIMULACION = True` completa la pantalla y **no graba**.
 - `_debug_columnas.py`: utilitario de diagnóstico. Imprime el `ColumnOrder` del grid de posiciones de ME53N, que es
-  lo que hace falta para leer varias posiciones. Requiere SAP GUI abierto y `pip install pywin32 pillow`.
+  lo que hace falta para leer varias posiciones. Requiere SAP GUI abierto y `pip install -e ".[sap]"`
+  (equivale a `pip install "pywin32>=311" "pillow>=11.3"`; en 3.14 los pisos son obligatorios).
 
   ```
   .venv\Scripts\python sap\_debug_columnas.py 10012345 --valores 3
@@ -200,7 +204,7 @@ python -m pytest tests/test_classifier.py -k invalida   # un test puntual
 
 ## Migrar a otra PC
 
-1. Instalá **Python 3.12** en la PC nueva (ver *Requisitos*).
+1. Instalá **Python >= 3.12** en la PC nueva (ver *Requisitos*).
 2. Copiá:
    - **El repo completo**, incluido `data/`. No hace falta copiar `.venv/`: se recrea.
    - **El `.env`** con sus valores.

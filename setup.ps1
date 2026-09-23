@@ -1,11 +1,11 @@
-﻿# Setup reproducible (Windows): verifica Python 3.12, crea .venv, instala dependencias pineadas
+﻿# Setup reproducible (Windows): verifica Python >= 3.12, crea .venv, instala dependencias
 # y corre chequeos de sanity.
 # Uso:  powershell -ExecutionPolicy Bypass -File .\setup.ps1
 #       (opcional) $env:PYTHON = "C:\ruta\python.exe"; .\setup.ps1
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 
-$Requerida = "3.12"
+$MinRequerida = "3.12"
 
 function Get-PyVersion([string]$Exe, [string[]]$ExtraArgs) {
     try {
@@ -15,16 +15,22 @@ function Get-PyVersion([string]$Exe, [string[]]$ExtraArgs) {
     return ""
 }
 
+# True si el interprete es >= $MinRequerida (3.12, 3.13, 3.14, ...).
+function Test-PyMinimo([string]$Exe, [string[]]$ExtraArgs) {
+    $v = Get-PyVersion $Exe $ExtraArgs
+    if (-not $v) { return $false }
+    try { return ([version]$v -ge [version]$MinRequerida) } catch { return $false }
+}
+
 function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Falló: $Exe $($Arguments -join ' ') (código $LASTEXITCODE)" }
 }
 
-Write-Host "==> Verificando Python $Requerida"
+Write-Host "==> Verificando Python >= $MinRequerida"
 $candidatos = @()
 if ($env:PYTHON) { $candidatos += ,@($env:PYTHON) }
-$candidatos += ,@("py", "-$Requerida")
-$candidatos += ,@("python3.12")
+$candidatos += ,@("py", "-3")
 $candidatos += ,@("python")
 $candidatos += ,@("python3")
 
@@ -33,14 +39,14 @@ foreach ($c in $candidatos) {
     $exe = $c[0]
     $extra = @($c | Select-Object -Skip 1)
     if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
-    if ((Get-PyVersion $exe $extra) -eq $Requerida) { $PyExe = $exe; $PyArgs = $extra; break }
+    if (Test-PyMinimo $exe $extra) { $PyExe = $exe; $PyArgs = $extra; break }
 }
 
 if (-not $PyExe) {
     Write-Error @"
-No se encontró Python $Requerida.
+No se encontró Python >= $MinRequerida.
 Instalalo y volvé a correr este script:
-  winget install -e --id Python.Python.3.12
+  winget install -e --id Python.Python.3.12   # o una versión superior
   (o descargalo de https://www.python.org/downloads/windows/ y marcá 'Add python.exe to PATH')
 O indicá el intérprete:  `$env:PYTHON = 'C:\ruta\python.exe'; .\setup.ps1
 "@
@@ -50,8 +56,8 @@ $ver = & $PyExe @PyArgs --version
 Write-Host "    Usando $ver ($PyExe $($PyArgs -join ' '))"
 
 $VenvPy = Join-Path $PSScriptRoot ".venv\Scripts\python.exe"
-if ((Test-Path $VenvPy) -and ((Get-PyVersion $VenvPy @()) -ne $Requerida)) {
-    Write-Host "==> .venv existente usa otra versión de Python: se recrea"
+if ((Test-Path $VenvPy) -and (-not (Test-PyMinimo $VenvPy @()))) {
+    Write-Host "==> .venv existente usa un Python anterior a $MinRequerida: se recrea"
     Remove-Item -Recurse -Force (Join-Path $PSScriptRoot ".venv")
 }
 if (-not (Test-Path $VenvPy)) {
@@ -62,7 +68,7 @@ if (-not (Test-Path $VenvPy)) {
 # Activación para esta sesión (si la ExecutionPolicy lo impide, se usa el python del venv directamente)
 try { . (Join-Path $PSScriptRoot ".venv\Scripts\Activate.ps1") } catch { Write-Host "    (no se pudo activar el venv en esta sesión; se usa $VenvPy)" }
 
-Write-Host "==> Instalando dependencias (pyproject.toml, versiones exactas)"
+Write-Host "==> Instalando dependencias (pyproject.toml)"
 Invoke-Checked $VenvPy @("-m", "pip", "install", "--upgrade", "pip")
 Invoke-Checked $VenvPy @("-m", "pip", "install", "-e", ".[dev]")
 

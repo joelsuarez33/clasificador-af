@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Python **3.12 only** (`requires-python = ">=3.12,<3.13"`). On this Windows machine the default `python` is 3.14, so use the venv or `py -3.12`.
+Python **>= 3.12** (`requires-python = ">=3.12"`, no upper bound). The default `python` on this Windows machine is 3.14 and the project runs on it. Dependency floors that 3.14 needs: `pydantic>=2.12`, `grpcio>=1.75.1`, `pywin32>=311` (first versions with cp314 wheels).
 
 ```
 powershell -ExecutionPolicy Bypass -File .\setup.ps1   # create .venv, pip install -e ".[dev]", run tests and config check

@@ -31,8 +31,8 @@ class ConfigError(RuntimeError):
 
 
 def verificar_python() -> None:
-    if sys.version_info[:2] != (3, 12):
-        raise RuntimeError(f"Se requiere Python 3.12, detectado {sys.version}")
+    if sys.version_info[:2] < (3, 12):
+        raise RuntimeError(f"Se requiere Python >= 3.12, detectado {sys.version}")
 
 
 @dataclass(frozen=True)

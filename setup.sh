@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
-# Setup reproducible (Linux/macOS): verifica Python 3.12, crea .venv, instala dependencias pineadas
-# y corre chequeos de sanity. Uso: ./setup.sh   (o PYTHON=/ruta/python3.12 ./setup.sh)
+# Setup reproducible (Linux/macOS): verifica Python >= 3.12, crea .venv, instala dependencias
+# y corre chequeos de sanity. Uso: ./setup.sh   (o PYTHON=/ruta/a/python3 ./setup.sh)
 set -euo pipefail
 cd "$(dirname "$0")"
 
-REQUERIDA="3.12"
+MIN_REQUERIDA="3.12"
 
 version_de() {
   "$1" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || true
 }
 
+# 0 si el interprete es >= 3.12 (3.12, 3.13, 3.14, ...).
+cumple_minimo() {
+  "$1" -c 'import sys; raise SystemExit(0 if sys.version_info[:2] >= (3, 12) else 1)' 2>/dev/null
+}
+
 buscar_python() {
   local candidato
-  for candidato in "${PYTHON:-}" python3.12 python3 python; do
+  for candidato in "${PYTHON:-}" python3 python; do
     [ -n "$candidato" ] || continue
     command -v "$candidato" >/dev/null 2>&1 || continue
-    if [ "$(version_de "$candidato")" = "$REQUERIDA" ]; then
+    if cumple_minimo "$candidato"; then
       echo "$candidato"
       return 0
     fi
@@ -23,22 +28,22 @@ buscar_python() {
   return 1
 }
 
-echo "==> Verificando Python $REQUERIDA"
+echo "==> Verificando Python >= $MIN_REQUERIDA"
 if ! PY="$(buscar_python)"; then
   cat >&2 <<EOF
-ERROR: no se encontró Python $REQUERIDA en el PATH.
+ERROR: no se encontró Python >= $MIN_REQUERIDA en el PATH.
 Instalalo y volvé a correr este script:
-  macOS:          brew install python@3.12
-  Ubuntu/Debian:  sudo apt install python3.12 python3.12-venv   (o PPA deadsnakes)
-  pyenv:          pyenv install 3.12.7 && pyenv local 3.12.7
-O indicá el intérprete: PYTHON=/ruta/a/python3.12 ./setup.sh
+  macOS:          brew install python@3.12   # o superior
+  Ubuntu/Debian:  sudo apt install python3.12 python3.12-venv   (o superior; PPA deadsnakes)
+  pyenv:          pyenv install 3.14 && pyenv local 3.14
+O indicá el intérprete: PYTHON=/ruta/a/python3 ./setup.sh
 EOF
   exit 1
 fi
 echo "    Usando $("$PY" --version) ($(command -v "$PY"))"
 
-if [ -x .venv/bin/python ] && [ "$(version_de .venv/bin/python)" != "$REQUERIDA" ]; then
-  echo "==> .venv existente usa otra versión de Python: se recrea"
+if [ -x .venv/bin/python ] && ! cumple_minimo .venv/bin/python; then
+  echo "==> .venv existente usa un Python anterior a $MIN_REQUERIDA: se recrea"
   rm -rf .venv
 fi
 
@@ -50,7 +55,7 @@ fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
 
-echo "==> Instalando dependencias (pyproject.toml, versiones exactas)"
+echo "==> Instalando dependencias (pyproject.toml)"
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 

@@ -15,19 +15,12 @@ activo la clase correcta del "Daimler Group Asset Class Catalogue".
 REGLAS OBLIGATORIAS
 1. `clase_sugerida` DEBE ser exactamente uno de los códigos de 8 dígitos listados en CATÁLOGO. \
 Nunca inventes, modifiques ni combines códigos.
-2. Si ninguna clase calza bien, elegí la más cercana del CATÁLOGO y usá confianza "baja". \
+2. Si ninguna clase calza bien, elegí la más cercana del CATÁLOGO. \
 Nunca devuelvas un código que no esté en el CATÁLOGO.
 3. Los PRECEDENTES son activos históricos ya clasificados correctamente: son evidencia fuerte, \
 pero un precedente marcado [FUERA DE CATÁLOGO] no puede elegirse como clase.
-4. `alternativas`: hasta 3 clases del CATÁLOGO distintas de la sugerida, ordenadas de más a menos \
-probable, con su motivo. Lista vacía si no hay alternativas razonables.
-5. `confianza`:
-   - "alta": precedentes muy similares coinciden mayoritariamente en la clase y la descripción del catálogo lo confirma.
-   - "media": evidencia parcial (precedentes divididos o poco similares) pero la clase es consistente con el catálogo.
-   - "baja": sin precedentes relevantes, evidencia contradictoria, o ninguna clase calza bien.
-6. `justificacion`: en español, 2 a 4 oraciones. Citá los precedentes más relevantes (denominación y clase) \
-y el criterio del catálogo aplicado.
-7. Respondé únicamente con el JSON del esquema solicitado.
+4. Respondé únicamente con un JSON que contenga exactamente `clase_sugerida` y `denominacion_sugerida`.
+5. No incluyas confianza, justificación, alternativas, explicaciones ni ningún otro campo.
 
 CATÁLOGO ({n} clases) — formato: código | rubro | descripción | explicación y ejemplos
 {catalogo}
@@ -104,6 +97,7 @@ def build_user_prompt(entrada: ClasificacionInput, precedentes: list[Precedente]
 def build_correccion(error: str) -> str:
     return (
         f"Tu respuesta anterior fue rechazada: {error}\n"
-        "Corregila respetando el esquema JSON. `clase_sugerida` y cada `alternativas[].clase` "
-        "deben ser exactamente códigos del CATÁLOGO."
+        "Corregila respetando el esquema JSON: debe contener únicamente "
+        "`clase_sugerida` y `denominacion_sugerida`. `clase_sugerida` debe ser exactamente "
+        "un código del CATÁLOGO."
     )

@@ -34,8 +34,8 @@ class AlternativaClase(BaseModel):
     motivo: str = Field(description="Por qué esta clase es una alternativa plausible")
 
 
-class ClasificacionOutput(BaseModel):
-    """Esquema de respuesta que se exige a Gemini (response_schema)."""
+class ClasificacionLLMOutput(BaseModel):
+    """Único esquema que Gemini puede devolver."""
 
     clase_sugerida: int = Field(description="Código de 8 dígitos, exactamente uno de los del catálogo")
     denominacion_sugerida: str = Field(
@@ -46,6 +46,11 @@ class ClasificacionOutput(BaseModel):
             "el bien resultante), no repetir el nombre de la clase."
         ),
     )
+
+
+class ClasificacionOutput(ClasificacionLLMOutput):
+    """Respuesta interna enriquecida con datos calculados por la aplicación."""
+
     confianza: Confianza = Field(description="alta | media | baja")
     justificacion: str = Field(description="Justificación en español citando precedentes y criterio del catálogo")
     alternativas: list[AlternativaClase] = Field(description="Hasta 3 clases alternativas del catálogo")

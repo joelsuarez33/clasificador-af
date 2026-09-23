@@ -7,12 +7,11 @@ Flujo completo:
   1. Pop-up pide el nro de solicitud de pedido (BANFN).
   2. Abre ME53N, navega a la SolPed y selecciona la pestana Imputacion.
   3. Extrae los datos de imputacion por ID de campo (sin OCR).
-  4. Captura la pantalla y la deja en el portapapeles (Ctrl+V).
-  5. Muestra un formulario de revision con los datos que se van a cargar.
+  4. Muestra un formulario de revision con los datos que se van a cargar.
      El controller confirma o corrige antes de tocar AS01.
-  6. Abre AS01, completa clase de activo, sociedad, denominacion,
+  5. Abre AS01, completa clase de activo, sociedad, denominacion,
      centros de coste y campos de asignacion.
-  7. Graba solo si MODO_SIMULACION = False y el usuario confirma.
+  6. Graba solo si MODO_SIMULACION = False y el usuario confirma.
      Devuelve el nro de activo que informa la statusbar.
 
 Requisitos:
@@ -23,6 +22,7 @@ Sin credenciales: reutiliza la sesion activa.
 """
 
 import os
+import re
 import sys
 import time
 import ctypes
@@ -43,6 +43,27 @@ except ImportError:
     print("ERROR: falta pywin32.  Instalar con:  pip install pywin32")
     sys.exit(1)
 
+# --- Clasificador LLM (app/classifier_core.py en la raiz del repo) ---------
+RAIZ_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if RAIZ_REPO not in sys.path:
+    sys.path.insert(0, RAIZ_REPO)
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(RAIZ_REPO, ".env"))
+except ImportError:
+    pass
+
+try:
+    from app.classifier_core import clasificar_af
+    ERROR_IMPORT_LLM = None
+except Exception as _exc:          # sin .env, sin dependencias, archivo inexistente
+    import traceback
+    clasificar_af = None
+    ERROR_IMPORT_LLM = "{}: {}\n\n{}".format(
+        type(_exc).__name__, _exc, traceback.format_exc(limit=3)
+    )
+
 try:
     from PIL import Image
 except ImportError:
@@ -61,19 +82,27 @@ MODO_SIMULACION = True
 GUARDAR_PNG = True
 CARPETA_PNG = os.path.join(os.path.expanduser("~"), "Pictures", "SAP_Capturas")
 ESPERA_RENDER = 0.6
+
+# Conexion SAP
+SAP_LOGON_LNK = r"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\SAP Front End\SAP Logon 64.lnk"
+SAP_SISTEMA = "TA-F11 ERP Argentina [PRD]"   # descripcion exacta en SAP Logon (PRD: "TA-F11 ERP Argentina [PRD]")
+ESPERA_ARRANQUE_LOGON = 4      # segundos tras lanzar SAP Logon
+TIMEOUT_SESION = 30            # segundos maximos para que la conexion abra sesion
+TIMEOUT_LOGIN_MANUAL = 120     # segundos para loguearse a mano si no hay SSO
 PW_RENDERFULLCONTENT = 0x00000002
 
 # Valores por defecto de AS01. El formulario de revision permite cambiarlos.
 DEFAULTS_AS01 = {
-    "ANLKL":  "54000010",   # Clase de activo
+    "ANLKL":  "54000010",   # Clase de activo - FIJA. ANLA-ANLKL es CHAR 8
     "BUKRS":  "MBA",        # Sociedad
     "TXT50":  "",           # Denominacion (se propone desde la SolPed)
-    "TXA50":  "Propuesta LLM",
+    "TXA50":  "",           # Texto adicional <- respuesta de Gemini
     "KOSTL":  "",           # Centro de coste
     "KOSTLV": "",           # Centro de coste responsable
     "ORD41":  "NAC",
+    "GDLGRP": "54000010",   # Grupo de activos fijos
     "ORD43":  "5400",
-    "ORD44":  "B302",
+    "ORD44":  "",           # Categoria 4 <- derivada del CeCo (tabla Detalle Cecos)
 }
 
 
@@ -101,6 +130,24 @@ ME53N_IDS = {
     "cebe": KACB + "/ctxtCOBL-PRCTR",
 }
 
+GRID_POSICIONES_IDS = [
+    (
+        "wnd[0]/usr/subSUB0:SAPLMEGUI:0019/subSUB3:SAPLMEVIEWS:1100/"
+        "subSUB2:SAPLMEVIEWS:1200/subSUB1:SAPLMEGUI:3212/"
+        "cntlGRIDCONTROL/shellcont/shell"
+    ),
+    (
+        "wnd[0]/usr/subSUB0:SAPLMEGUI:0019/subSUB2:SAPLMEVIEWS:1100/"
+        "subSUB2:SAPLMEVIEWS:1200/subSUB1:SAPLMEGUI:3212/"
+        "cntlGRIDCONTROL/shellcont/shell"
+    ),
+    (
+        "wnd[0]/usr/subSUB0:SAPLMEGUI:0019/subSUB3:SAPLMEVIEWS:1100/"
+        "subSUB2:SAPLMEVIEWS:1200/subSUB1:SAPLMEGUI:3211/"
+        "cntlGRIDCONTROL/shellcont/shell"
+    ),
+]
+
 TAB = "wnd[0]/usr/subTABSTRIP:SAPLATAB:0100/tabsTABSTRIP100"
 
 AS01_IDS = {
@@ -114,6 +161,7 @@ AS01_IDS = {
     "kostlv": TAB + "/tabpTAB02/ssubSUBSC:SAPLATAB:0201/subAREA1:SAPLAIST:1145/ctxtANLZ-KOSTLV",
     "tab03":  TAB + "/tabpTAB03",
     "ord41":  TAB + "/tabpTAB03/ssubSUBSC:SAPLATAB:0200/subAREA1:SAPLAIST:1160/ctxtANLA-ORD41",
+    "gdlgrp": TAB + "/tabpTAB03/ssubSUBSC:SAPLATAB:0200/subAREA1:SAPLAIST:1160/ctxtANLA-GDLGRP",
     "ord43":  TAB + "/tabpTAB03/ssubSUBSC:SAPLATAB:0200/subAREA1:SAPLAIST:1160/ctxtANLA-ORD43",
     "ord44":  TAB + "/tabpTAB03/ssubSUBSC:SAPLATAB:0200/subAREA1:SAPLAIST:1160/ctxtANLA-ORD44",
     "grabar": "wnd[0]/tbar[0]/btn[11]",
@@ -190,6 +238,7 @@ def formulario_as01(propuesta):
         ("KOSTL",  "Centro de coste"),
         ("KOSTLV", "CeCo responsable"),
         ("ORD41",  "Asignacion 1"),
+        ("GDLGRP", "Grupo de activos"),
         ("ORD43",  "Asignacion 3"),
         ("ORD44",  "Asignacion 4"),
     ]
@@ -260,25 +309,109 @@ def formulario_as01(propuesta):
 # CONEXION SAP
 # ===========================================================================
 
-def obtener_sesion():
-    """Devuelve la primera sesion SAP GUI disponible."""
+def _scripting_engine():
+    """
+    Devuelve el scripting engine de SAP GUI.
+    Si SAP Logon no esta corriendo, lo lanza y reintenta.
+    """
+    lanzado = False
+    for intento in range(10):
+        try:
+            sap_gui = win32com.client.GetObject("SAPGUI")
+            app = sap_gui.GetScriptingEngine
+            if app is not None:
+                return app
+        except Exception:
+            pass
+
+        if not lanzado:
+            try:
+                os.startfile(SAP_LOGON_LNK)
+                lanzado = True
+                time.sleep(ESPERA_ARRANQUE_LOGON)
+                continue
+            except Exception as exc:
+                raise RuntimeError(
+                    "No se pudo iniciar SAP Logon desde:\n{}\nDetalle: {}".format(SAP_LOGON_LNK, exc)
+                )
+        time.sleep(1)
+
+    raise RuntimeError(
+        "SAP Logon no expone el scripting engine.\n"
+        "Verifica en SAP Logon > Opciones > Accesibilidad y scripting > Scripting "
+        "que 'Habilitar scripting' este tildado, cerra SAP GUI por completo y reintenta."
+    )
+
+
+def _sesion_logueada(sesion):
+    """True si la sesion ya paso la pantalla de login."""
     try:
-        sap_gui = win32com.client.GetObject("SAPGUI")
+        return bool(str(sesion.Info.User).strip())
     except Exception:
+        return False
+
+
+def obtener_sesion():
+    """
+    Devuelve una sesion logueada en SAP_SISTEMA.
+    1. Reusa una conexion ya abierta a ese sistema si existe.
+    2. Si no, la abre con OpenConnection (SSO si esta configurado).
+    3. Si aparece la pantalla de login, espera a que el usuario se loguee a mano.
+    No maneja credenciales.
+    """
+    app = _scripting_engine()
+
+    # 1. Reusar conexion existente al sistema
+    for i in range(app.Children.Count):
+        con = app.Children(i)
+        try:
+            descripcion = str(con.Description).strip()
+        except Exception:
+            descripcion = ""
+        if descripcion == SAP_SISTEMA and con.Children.Count > 0:
+            sesion = con.Children(0)
+            if _sesion_logueada(sesion):
+                return sesion
+
+    # 2. Abrir conexion nueva
+    try:
+        con = app.OpenConnection(SAP_SISTEMA, True)
+    except Exception as exc:
         raise RuntimeError(
-            "No se encontro SAP GUI en ejecucion.\n"
-            "Abri SAP Logon e inicia sesion antes de correr el script."
+            "No se pudo abrir la conexion '{}'.\n"
+            "Verifica que el nombre coincida EXACTO con la entrada de SAP Logon "
+            "y que el scripting este habilitado.\nDetalle: {}".format(SAP_SISTEMA, exc)
         )
 
-    app = sap_gui.GetScriptingEngine
-    if app.Connections.Count == 0:
-        raise RuntimeError("SAP GUI esta abierto pero no hay ninguna conexion activa.")
+    sesion = None
+    for _ in range(TIMEOUT_SESION):
+        if con.Children.Count > 0:
+            sesion = con.Children(0)
+            break
+        time.sleep(1)
+    if sesion is None:
+        raise RuntimeError(
+            "La conexion '{}' se abrio pero no creo sesion en {}s.".format(SAP_SISTEMA, TIMEOUT_SESION)
+        )
 
-    conexion = app.Children(0)
-    if conexion.Children.Count == 0:
-        raise RuntimeError("La conexion SAP no tiene sesiones abiertas.")
+    # 3. Login: SSO entra solo; si no, esperar login manual
+    if _sesion_logueada(sesion):
+        return sesion
 
-    return conexion.Children(0)
+    avisar(
+        "Login SAP",
+        "Se abrio '{}'.\n\nLogueate en SAP y despues toca Aceptar.\n"
+        "El script espera hasta {}s.".format(SAP_SISTEMA, TIMEOUT_LOGIN_MANUAL),
+    )
+    for _ in range(TIMEOUT_LOGIN_MANUAL):
+        if _sesion_logueada(sesion):
+            cerrar_popups(sesion)   # popups post-login (multiples logins, novedades)
+            return sesion
+        time.sleep(1)
+
+    raise RuntimeError(
+        "No se detecto login en '{}' dentro de {}s.".format(SAP_SISTEMA, TIMEOUT_LOGIN_MANUAL)
+    )
 
 
 def leer(session, ruta, defecto=""):
@@ -289,16 +422,97 @@ def leer(session, ruta, defecto=""):
         return defecto
 
 
-def escribir(session, ruta, valor, etiqueta):
-    """Escribe en un campo. Lanza RuntimeError con contexto si falla."""
-    if valor is None or valor == "":
-        return
+def _asignar(campo, valor, etiqueta):
+    """Valida largo contra MaxLength y escribe el valor."""
     try:
-        session.findById(ruta).text = valor
+        largo_max = int(campo.MaxLength)
+    except Exception:
+        largo_max = 0
+    if largo_max and len(valor) > largo_max:
+        raise RuntimeError(
+            "'{}' tiene {} caracteres y el campo {} admite {}.".format(
+                valor, len(valor), etiqueta, largo_max
+            )
+        )
+    try:
+        campo.text = valor
     except Exception as exc:
         raise RuntimeError(
             "No se pudo escribir '{}' en el campo {} -> {}".format(valor, etiqueta, exc)
         )
+
+
+def escribir(session, ruta, valor, etiqueta):
+    """Escribe en un campo por ID completo. Para campos de pantalla fija (ANLKL, BUKRS)."""
+    if valor is None or valor == "":
+        return
+    try:
+        campo = session.findById(ruta)
+    except Exception as exc:
+        raise RuntimeError(
+            "No se encontro el campo {} en la pantalla actual -> {}".format(etiqueta, exc)
+        )
+    _asignar(campo, valor, etiqueta)
+
+
+def _buscar_por_nombre(session, nombre, tipo):
+    """Busca un campo por nombre tecnico en el area visible. Devuelve el control o None."""
+    try:
+        usr = session.findById("wnd[0]/usr")
+    except Exception:
+        return None
+    try:
+        campo = usr.FindByNameEx(nombre, tipo)
+        if campo is not None:
+            return campo
+    except Exception:
+        pass
+    try:
+        return usr.FindByName(nombre, tipo)
+    except Exception:
+        return None
+
+
+def localizar_campo_as01(session, nombre, tipo):
+    """
+    Busca un campo de AS01 por nombre tecnico (ej. ANLA-ORD41) recorriendo las
+    pestanas del tabstrip. No depende del numero de pestana ni del subscreen,
+    que cambian entre PRD y QAS o segun la clase de activo.
+    """
+    campo = _buscar_por_nombre(session, nombre, tipo)
+    if campo is not None:
+        return campo
+
+    try:
+        cantidad = session.findById(TAB).Children.Count
+    except Exception as exc:
+        raise RuntimeError("No se encontro el tabstrip de AS01 -> {}".format(exc))
+
+    pestanas = []
+    for i in range(cantidad):
+        try:
+            pestana = session.findById(TAB).Children(i)   # re-buscar: el objeto se invalida al cambiar de tab
+            pestanas.append(str(pestana.Text).strip())
+            pestana.select()
+            time.sleep(0.2)
+        except Exception:
+            continue
+        campo = _buscar_por_nombre(session, nombre, tipo)
+        if campo is not None:
+            return campo
+
+    raise RuntimeError(
+        "El campo {} no existe en ninguna pestana de AS01 para esta clase de activo.\n"
+        "Pestanas revisadas: {}".format(nombre, ", ".join(pestanas) or "(ninguna)")
+    )
+
+
+def escribir_as01(session, nombre, tipo, valor, etiqueta):
+    """Escribe en un campo de AS01 localizandolo por nombre tecnico."""
+    if valor is None or valor == "":
+        return
+    campo = localizar_campo_as01(session, nombre, tipo)
+    _asignar(campo, valor, etiqueta)
 
 
 def cerrar_popups(session):
@@ -387,19 +601,351 @@ def extraer_imputacion(session):
     return datos
 
 
+def _buscar_grid_posiciones(session):
+    for ruta in GRID_POSICIONES_IDS:
+        try:
+            return session.findById(ruta)
+        except Exception:
+            continue
+    raise RuntimeError(
+        "No se encontro el grid de posiciones de ME53N. "
+        "Verifica que el resumen de posiciones este visible."
+    )
+
+
+def _seleccionar_posicion(session, grid, fila):
+    columnas = [str(c) for c in grid.ColumnOrder]
+    if not columnas:
+        raise RuntimeError("El grid de posiciones no tiene columnas.")
+    try:
+        grid.setCurrentCell(fila, columnas[0])
+    except Exception:
+        try:
+            grid.currentCellRow = fila
+        except Exception:
+            pass
+    try:
+        grid.selectRow(fila)
+    except Exception:
+        pass
+    time.sleep(0.4)
+
+
+def _columna_texto_breve(grid):
+    """Encuentra la columna de texto breve según título o nombre técnico."""
+    for columna in (str(c) for c in grid.ColumnOrder):
+        try:
+            titulos = " ".join(str(t) for t in grid.GetColumnTitles(columna))
+        except Exception:
+            titulos = ""
+        identificador = "{} {}".format(columna, titulos).upper()
+        if "TEXTO BREVE" in identificador or "TXZ01" in identificador:
+            return columna
+    return None
+
+
+def _texto_breve_de_fila(grid, fila, columna_texto):
+    if columna_texto is None:
+        return ""
+    try:
+        return str(grid.GetCellValue(fila, columna_texto)).strip()
+    except Exception:
+        return ""
+
+
+def _columna_cantidad(grid):
+    """Encuentra la columna Cantidad según título o nombre técnico."""
+    for columna in (str(c) for c in grid.ColumnOrder):
+        try:
+            titulos = " ".join(str(t) for t in grid.GetColumnTitles(columna))
+        except Exception:
+            titulos = ""
+        identificador = "{} {}".format(columna, titulos).upper()
+        if "CANTIDAD" in identificador or identificador.split()[0] in {"MENGE", "ERFMG"}:
+            return columna
+    return None
+
+
+def _cantidad_de_fila(grid, fila, columna_cantidad):
+    if columna_cantidad is None:
+        return ""
+    try:
+        return str(grid.GetCellValue(fila, columna_cantidad)).strip()
+    except Exception:
+        return ""
+
+
+def _cantidad_distinta_de_uno(cantidad):
+    """Evalúa cantidades SAP como 1, 1.0 o 1,000 sin agregar sufijo."""
+    texto = str(cantidad).strip().replace(" ", "")
+    if not texto:
+        return False
+    if re.fullmatch(r"1(?:[.,]0+)?", texto):
+        return False
+    return True
+
+
+def _texto_con_cantidad(texto, cantidad):
+    texto = str(texto or "").strip()
+    cantidad = str(cantidad or "").strip()
+    if not texto or not _cantidad_distinta_de_uno(cantidad):
+        return texto
+    return "{} - {}".format(texto, cantidad)
+
+
+def extraer_todas_las_imputaciones(session):
+    """Selecciona y lee todas las posiciones de la SolPed desde el grid."""
+    grid = _buscar_grid_posiciones(session)
+    cantidad = int(grid.RowCount)
+    if cantidad <= 0:
+        raise RuntimeError("La SolPed no tiene posiciones para procesar.")
+
+    columna_texto = _columna_texto_breve(grid)
+    columna_cantidad = _columna_cantidad(grid)
+    if columna_cantidad is None:
+        raise RuntimeError("No se encontro la columna Cantidad en el grid de posiciones de ME53N.")
+    posiciones = []
+    for fila in range(cantidad):
+        texto_grid = _texto_breve_de_fila(grid, fila, columna_texto)
+        if not texto_grid:
+            # El grid puede incluir una fila de totales dentro de RowCount.
+            continue
+        cantidad_grid = _cantidad_de_fila(grid, fila, columna_cantidad)
+        _seleccionar_posicion(session, grid, fila)
+        datos = extraer_imputacion(session)
+        datos["texto_breve"] = texto_grid
+        datos["cantidad"] = cantidad_grid
+        datos["fila_grid"] = fila
+        posiciones.append(datos)
+
+    if not posiciones:
+        raise RuntimeError("No se encontraron posiciones con texto breve en el grid de ME53N.")
+
+    _seleccionar_posicion(session, grid, posiciones[0]["fila_grid"])
+    return posiciones
+
+
+def elegir_modo_activos(posiciones, propuesta_primera):
+    """Pregunta si se crea un activo por posición o uno combinado."""
+    resultado = {"modo": None}
+    root = tk.Tk()
+    root.title("SolPed con varias posiciones")
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+
+    tk.Label(
+        root,
+        text="Se encontraron {} posiciones. Elegí cómo crear los activos:".format(len(posiciones)),
+        font=("Segoe UI", 9, "bold"),
+    ).pack(padx=14, pady=(12, 8), anchor="w")
+
+    marco = tk.Frame(root)
+    marco.pack(padx=14, fill="x")
+    for i, datos in enumerate(posiciones, 1):
+        texto = _texto_con_cantidad(datos.get("texto_breve", ""), datos.get("cantidad"))
+        cantidad = datos.get("cantidad") or "(sin cantidad)"
+        tk.Label(
+            marco,
+            text="{} - {} | Cantidad: {}".format(i, texto or "(sin descripción)", cantidad),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x")
+
+    tk.Label(
+        root,
+        text=(
+            "\nClasificación sugerida para un activo combinado (se toma la primera posición):\n"
+            "{}"
+        ).format(propuesta_primera.get("TXA50") or "(sin clasificación)"),
+        justify="left",
+        wraplength=560,
+    ).pack(padx=14, pady=(10, 4), anchor="w")
+
+    def elegir(modo):
+        resultado["modo"] = modo
+        root.destroy()
+
+    botones = tk.Frame(root)
+    botones.pack(pady=(8, 12))
+    tk.Button(
+        botones,
+        text="Un activo por línea",
+        width=22,
+        command=lambda: elegir("por_linea"),
+    ).pack(side="left", padx=5)
+    tk.Button(
+        botones,
+        text="Combinar en un activo",
+        width=22,
+        command=lambda: elegir("unico"),
+    ).pack(side="left", padx=5)
+    tk.Button(botones, text="Cancelar", width=12, command=root.destroy).pack(side="left", padx=5)
+    root.bind("<Escape>", lambda _e: root.destroy())
+    root.mainloop()
+    return resultado["modo"]
+
+
+# ===========================================================================
+# LOGICA CECO -> CATEGORIA 4 (ANLA-ORD44)
+# ===========================================================================
+
+_MAPA_CAT4 = None
+
+
+def _norm_ceco(valor):
+    """'0000001605', 1605, ' b3025 ' -> '1605', 'B3025'. SAP rellena con ceros a la izquierda."""
+    texto = str(valor).strip().upper()
+    if texto.endswith(".0"):
+        texto = texto[:-2]
+    return texto.lstrip("0") or texto
+
+
+def cargar_mapa_cat4():
+    """Lee data/Detalle*Cecos*.xlsx (col A = CeCo, col B = Cat. 4). Cachea en memoria."""
+    global _MAPA_CAT4
+    if _MAPA_CAT4 is not None:
+        return _MAPA_CAT4
+
+    import glob
+    _MAPA_CAT4 = {}
+    candidatos = sorted(glob.glob(os.path.join(RAIZ_REPO, "data", "Detalle*Ceco*.xlsx")))
+    if not candidatos:
+        print("AVISO CeCo: no se encontro data/Detalle*Cecos*.xlsx. ORD44 queda para carga manual.")
+        return _MAPA_CAT4
+
+    try:
+        import openpyxl
+        hoja = openpyxl.load_workbook(candidatos[0], read_only=True, data_only=True).active
+        for fila in hoja.iter_rows(min_row=2, values_only=True):
+            if not fila or fila[0] is None or fila[1] is None:
+                continue
+            _MAPA_CAT4[_norm_ceco(fila[0])] = str(fila[1]).strip().upper()
+        print("Tabla CeCo -> Cat.4: {} registros ({})".format(
+            len(_MAPA_CAT4), os.path.basename(candidatos[0])))
+    except Exception as exc:
+        print("AVISO CeCo: no se pudo leer {} -> {}".format(candidatos[0], exc))
+    return _MAPA_CAT4
+
+
+def categoria4_de_ceco(kostl):
+    """Devuelve la Cat. 4 para un CeCo, o '' si no esta en la tabla."""
+    if not kostl:
+        return ""
+    return cargar_mapa_cat4().get(_norm_ceco(kostl), "")
+
+
+def kostlv_de_kostl(kostl):
+    """Devuelve el mismo CeCo para KOSTLV, limitado a 5 caracteres."""
+    return (_norm_ceco(kostl) if kostl else "")[:5]
+
+
+def completar_derivados(datos, propuesta):
+    """
+    Post-formulario: recalcula KOSTLV y ORD44 desde el CeCo final.
+    Solo pisa un campo si quedo vacio o si el usuario no lo toco
+    (sigue igual al valor propuesto). Si lo edito a mano, se respeta.
+    """
+    kostl = datos.get("KOSTL", "")
+    if not kostl:
+        return datos
+
+    for clave, derivar in (("KOSTLV", kostlv_de_kostl), ("ORD44", categoria4_de_ceco)):
+        actual = datos.get(clave, "")
+        if not actual or actual == propuesta.get(clave, ""):
+            nuevo = derivar(kostl)
+            if nuevo and nuevo != actual:
+                print("{} recalculado desde CeCo {}: {}".format(clave, kostl, nuevo))
+                datos[clave] = nuevo
+
+    if not datos.get("ORD44"):
+        print("AVISO CeCo: {} no esta en la tabla Detalle Cecos. ORD44 vacio.".format(kostl))
+    return datos
+
+
 def proponer_as01(datos):
     """Arma la propuesta de AS01 combinando defaults con lo leido de la SolPed."""
     propuesta = dict(DEFAULTS_AS01)
 
     if datos.get("texto_breve"):
-        propuesta["TXT50"] = datos["texto_breve"][:50]
+        propuesta["TXT50"] = _texto_con_cantidad(
+            datos["texto_breve"], datos.get("cantidad")
+        )[:50]
     if datos.get("sociedad_co"):
         propuesta["BUKRS"] = datos["sociedad_co"]
-    if datos.get("centro_coste"):
-        propuesta["KOSTL"] = datos["centro_coste"]
-        propuesta["KOSTLV"] = datos["centro_coste"]
+    # CeCo: Centro de coste de la imputacion; si viene vacio, el CeBe
+    ceco = datos.get("centro_coste") or datos.get("cebe") or ""
+    if ceco:
+        origen = "Centro de coste" if datos.get("centro_coste") else "CeBe"
+        propuesta["KOSTL"] = _norm_ceco(ceco)[:5]
+        propuesta["KOSTLV"] = kostlv_de_kostl(ceco)
+        propuesta["ORD44"] = categoria4_de_ceco(ceco)
+        print("CeCo {} (desde {}) -> responsable {} / Cat.4 {}".format(
+            propuesta["KOSTL"], origen, propuesta["KOSTLV"], propuesta["ORD44"] or "(no esta en tabla)"))
+    else:
+        print("AVISO CeCo: la SolPed no trae Centro de coste ni CeBe. Cargalo en el formulario.")
 
+    propuesta["TXA50"] = texto_llm(datos.get("texto_breve", ""))
     return propuesta
+
+
+def combinar_posiciones(posiciones):
+    """Arma una sola denominación conservando la imputación de la primera posición."""
+    combinado = dict(posiciones[0])
+    textos = [p.get("texto_breve", "").strip() for p in posiciones if p.get("texto_breve", "").strip()]
+    combinado["texto_breve"] = " + ".join(textos)
+    return combinado
+
+
+def _campo(obj, nombre, defecto=""):
+    """Lee un atributo de un modelo Pydantic o una clave de dict."""
+    if isinstance(obj, dict):
+        return obj.get(nombre, defecto)
+    return getattr(obj, nombre, defecto)
+
+
+def texto_llm(denominacion):
+    """
+    Llama a Gemini y devuelve el texto para ANLA-TXA50 (max 50 caracteres).
+    Si falla, devuelve un texto que lo deja visible en el formulario de revision.
+    """
+    if not denominacion:
+        return "LLM: sin denominacion"
+    if clasificar_af is None:
+        print("AVISO LLM: no se pudo importar el clasificador ->\n{}".format(ERROR_IMPORT_LLM))
+        avisar(
+            "Clasificador LLM no disponible",
+            "No se pudo importar app.classifier_core. El flujo sigue sin LLM.\n\n"
+            "Raiz del repo: {}\n\n{}".format(RAIZ_REPO, ERROR_IMPORT_LLM[:900]),
+            error=True,
+        )
+        return "LLM: no disponible"
+
+    try:
+        resultado = clasificar_af(denominacion=denominacion)
+    except Exception as exc:
+        import traceback
+        detalle = "{}: {}\n\n{}".format(type(exc).__name__, exc, traceback.format_exc(limit=4))
+        print("AVISO LLM: fallo la clasificacion ->\n{}".format(detalle))
+        avisar(
+            "Clasificador LLM - error",
+            "Gemini/BigQuery fallo al clasificar '{}'. El flujo sigue sin LLM.\n\n{}".format(
+                denominacion, detalle[:900]),
+            error=True,
+        )
+        return "LLM: error en clasificacion"
+
+    clase = _campo(resultado, "clase_sugerida")
+    descripcion = " ".join(_campo(resultado, "descripcion_clase").split())
+    confianza = _campo(resultado, "confianza")
+    justificacion = _campo(resultado, "justificacion")
+
+    print("\n--- Respuesta Gemini ---")
+    print("  Clase sugerida: {}".format(clase))
+    print("  Confianza     : {}".format(confianza))
+    if justificacion:
+        print("  Justificacion : {}".format(justificacion))
+
+    return "{} {}".format(clase, descripcion)[:50]
 
 
 # ===========================================================================
@@ -580,24 +1126,26 @@ def cargar_as01(session, datos):
 
     cerrar_popups(session)
 
-    # --- TAB01: datos generales ------------------------------------------
+    # --- Campos de las pestanas: se localizan por nombre tecnico ----------
+    # (tipo GuiTextField = txt, GuiCTextField = ctxt con matchcode)
+    campos_as01 = [
+        ("ANLA-TXT50",  "GuiTextField",  "TXT50",  "Denominacion (ANLA-TXT50)"),
+        ("ANLA-TXA50",  "GuiTextField",  "TXA50",  "Texto adicional (ANLA-TXA50)"),
+        ("ANLZ-KOSTL",  "GuiCTextField", "KOSTL",  "Centro de coste (ANLZ-KOSTL)"),
+        ("ANLZ-KOSTLV", "GuiCTextField", "KOSTLV", "CeCo responsable (ANLZ-KOSTLV)"),
+        ("ANLA-ORD41",  "GuiCTextField", "ORD41",  "Asignacion 1 (ANLA-ORD41)"),
+        ("ANLA-GDLGRP", "GuiCTextField", "GDLGRP", "Grupo de activos (ANLA-GDLGRP)"),
+        ("ANLA-ORD43",  "GuiCTextField", "ORD43",  "Asignacion 3 (ANLA-ORD43)"),
+        ("ANLA-ORD44",  "GuiCTextField", "ORD44",  "Asignacion 4 (ANLA-ORD44)"),
+    ]
+    for nombre, tipo, clave, etiqueta in campos_as01:
+        escribir_as01(session, nombre, tipo, datos[clave], etiqueta)
+
+    # Volver a la primera pestana para revisar en pantalla
     try:
-        session.findById(AS01_IDS["tab01"]).select()
+        session.findById(TAB).Children(0).select()
     except Exception:
         pass
-    escribir(session, AS01_IDS["txt50"], datos["TXT50"], "Denominacion (ANLA-TXT50)")
-    escribir(session, AS01_IDS["txa50"], datos["TXA50"], "Texto adicional (ANLA-TXA50)")
-
-    # --- TAB02: imputaciones ---------------------------------------------
-    session.findById(AS01_IDS["tab02"]).select()
-    escribir(session, AS01_IDS["kostl"], datos["KOSTL"], "Centro de coste (ANLZ-KOSTL)")
-    escribir(session, AS01_IDS["kostlv"], datos["KOSTLV"], "CeCo responsable (ANLZ-KOSTLV)")
-
-    # --- TAB03: asignaciones ---------------------------------------------
-    session.findById(AS01_IDS["tab03"]).select()
-    escribir(session, AS01_IDS["ord41"], datos["ORD41"], "Asignacion 1 (ANLA-ORD41)")
-    escribir(session, AS01_IDS["ord43"], datos["ORD43"], "Asignacion 3 (ANLA-ORD43)")
-    escribir(session, AS01_IDS["ord44"], datos["ORD44"], "Asignacion 4 (ANLA-ORD44)")
 
     # --- Grabar -----------------------------------------------------------
     if MODO_SIMULACION:
@@ -649,55 +1197,86 @@ def main():
     # --- 1. ME53N ---------------------------------------------------------
     try:
         abrir_me53n(session, banfn)
-        datos_solped = extraer_imputacion(session)
+        posiciones_solped = extraer_todas_las_imputaciones(session)
     except Exception as exc:
         print("ERROR ME53N: {}".format(exc))
         avisar("ME53N", str(exc), error=True)
         return 1
 
     print("\n--- Datos leidos de la SolPed ---")
-    for clave, valor in datos_solped.items():
-        if valor:
-            print("  {:<14}: {}".format(clave, valor))
-
-    # --- 2. Captura -------------------------------------------------------
-    ruta_png = capturar_y_copiar(session, "ME53N_{}".format(banfn))
-    if ruta_png:
-        print("\nCaptura guardada: {}".format(ruta_png))
-    print("Captura disponible en el portapapeles (Ctrl+V).")
-
-    # --- 3. Revision ------------------------------------------------------
-    propuesta = proponer_as01(datos_solped)
-    datos_as01 = formulario_as01(propuesta)
-    if datos_as01 is None:
-        print("\nCarga en AS01 cancelada. La captura sigue en el portapapeles.")
-        return 0
-
-    # --- 4. AS01 ----------------------------------------------------------
-    try:
-        grabado, mensaje = cargar_as01(session, datos_as01)
-    except Exception as exc:
-        print("ERROR AS01: {}".format(exc))
-        avisar(
-            "AS01",
-            "Fallo la carga en AS01:\n\n{}\n\n"
-            "La pantalla quedo como esta para que revises.".format(exc),
-            error=True,
+    for numero, posicion in enumerate(posiciones_solped, 1):
+        texto = _texto_con_cantidad(posicion.get("texto_breve", ""), posicion.get("cantidad"))
+        print(
+            "  Posicion {}: {} (Cantidad: {})".format(
+                numero, texto or "(sin descripcion)", posicion.get("cantidad") or "(sin cantidad)"
+            )
         )
-        return 1
 
-    capturar_y_copiar(session, "AS01_{}".format(banfn))
+    # --- 2. Elegir estrategia y revisar ----------------------------------
+    propuesta_primera = proponer_as01(posiciones_solped[0])
+    if len(posiciones_solped) == 1:
+        modo = "unico"
+    else:
+        modo = elegir_modo_activos(posiciones_solped, propuesta_primera)
+        if modo is None:
+            print("\nCarga en AS01 cancelada.")
+            return 0
 
+    if modo == "unico":
+        datos_combinados = combinar_posiciones(posiciones_solped)
+        # La clasificación del activo combinado se sugiere con la primera línea.
+        propuesta = dict(propuesta_primera)
+        propuesta["TXT50"] = _texto_con_cantidad(
+            datos_combinados.get("texto_breve", ""),
+            posiciones_solped[0].get("cantidad"),
+        )[:50]
+        datos_as01 = formulario_as01(propuesta)
+        if datos_as01 is None:
+            print("\nCarga en AS01 cancelada.")
+            return 0
+        datos_as01 = completar_derivados(datos_as01, propuesta)
+        trabajos = [(datos_as01, propuesta)]
+    else:
+        trabajos = []
+        for numero, posicion in enumerate(posiciones_solped, 1):
+            propuesta = propuesta_primera if numero == 1 else proponer_as01(posicion)
+            propuesta = dict(propuesta)
+            propuesta["TXT50"] = propuesta.get("TXT50") or _texto_con_cantidad(
+                posicion.get("texto_breve", ""), posicion.get("cantidad")
+            )[:50]
+            datos_as01 = formulario_as01(propuesta)
+            if datos_as01 is None:
+                print("\nCarga en AS01 cancelada. Los activos anteriores no se modifican.")
+                return 0
+            trabajos.append((completar_derivados(datos_as01, propuesta), propuesta))
+
+    # --- 3. AS01 ----------------------------------------------------------
+    for numero, (datos_as01, propuesta) in enumerate(trabajos, 1):
+        try:
+            grabado, mensaje = cargar_as01(session, datos_as01)
+        except Exception as exc:
+            print("ERROR AS01 en activo {}: {}".format(numero, exc))
+            avisar(
+                "AS01",
+                "Fallo la carga del activo {}:\n\n{}\n\n"
+                "La pantalla quedo como esta para que revises.".format(numero, exc),
+                error=True,
+            )
+            return 1
+        print("\nActivo {} procesado: {}".format(numero, mensaje))
+
+    datos_as01 = trabajos[-1][0]
     resumen = (
         "SolPed {} -> AS01\n\n"
+        "Activos procesados : {}\n"
         "Clase de activo : {}\n"
         "Sociedad        : {}\n"
         "Denominacion    : {}\n"
         "Centro de coste : {}\n\n"
-        "{}\n\n"
-        "Captura de AS01 en el portapapeles (Ctrl+V)."
+        "{}"
     ).format(
         banfn,
+        len(trabajos),
         datos_as01["ANLKL"],
         datos_as01["BUKRS"],
         datos_as01["TXT50"],
